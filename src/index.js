@@ -1,0 +1,240 @@
+'use strict';
+
+const CJSModule = require('module');
+const { fileURLToPath, pathToFileURL } = require('url');
+const path = require('path');
+const { readFile } = require('fs').promises;
+const {
+  ModuleWrap,
+  setInitializeImportMetaObjectCallback,
+  setImportModuleDynamicallyCallback,
+} = require('bindings')('module_wrap');
+const nodeResolve = require('./node_resolve');
+
+const resolvedPromise = Promise.resolve();
+const importMetaCallbackMap = new WeakMap();
+
+class ModuleMap extends Map {
+  constructor(...args) {
+    super(...args);
+    this.delete = undefined;
+  }
+
+  set(k, v) {
+    if (this.has(k)) {
+      throw new TypeError(`key '${k}' already set`);
+    }
+    return super.set(k, v);
+  }
+}
+
+const moduleMap = new ModuleMap();
+
+const createDynamicModule = (exports, url, evaluate) => {
+  const names = exports.map((name) => `${name}`);
+
+  const source = `${names.map((name) =>
+    `let $${name};
+export { $${name} as ${name} };
+import.meta.exports.${name} = {
+  get: () => $${name},
+  set: (v) => $${name} = v,
+};`).join('\n')}
+import.meta.done();
+`;
+
+  const m = new ModuleWrap(source, url);
+  m.link(() => 0);
+  m.instantiate();
+
+  const reflect = {
+    namespace: m.getNamespace(),
+    exports: {},
+  };
+
+  importMetaCallbackMap.set(m, (meta, wrap) => {
+    meta.url = wrap.url;
+    meta.exports = reflect.exports;
+    meta.done = () => {
+      evaluate(reflect);
+    };
+  });
+
+  return m;
+};
+
+const loadESM = async (url) => {
+  const source = await readFile(fileURLToPath(url), 'utf8');
+  return new ModuleWrap(source, url);
+};
+
+const loadCJS = async (url) => {
+  const pathname = url.startsWith('node:') ? url.slice(5) : fileURLToPath(url);
+  return createDynamicModule(['default'], url, (reflect) => {
+    const cache = CJSModule._cache[pathname];
+    const exports = cache ? cache.savedExports : require(pathname);
+    reflect.exports.default.set(exports);
+  });
+};
+
+const loaderMap = new Map([
+  ['cjs', loadCJS],
+  ['json', loadCJS],
+  ['native', loadCJS],
+  ['builtin', loadCJS],
+  ['esm', loadESM],
+]);
+
+const extensionMap = new Map([
+  ['.js', 'cjs'],
+  ['.json', 'json'],
+  ['.node', 'native'],
+  ['.mjs', 'esm'],
+]);
+
+async function resolve(specifier, referrer) {
+  let fileReferrer;
+  try {
+    fileReferrer = fileURLToPath(referrer);
+  } catch {
+    fileReferrer = referrer;
+  }
+  const resolved = await nodeResolve(specifier, fileReferrer);
+  if (resolved !== null) {
+    const type = resolved.startsWith('node:')
+      ? 'builtin'
+      : extensionMap.get(path.extname(resolved));
+    if (!type) {
+      throw new Error(`Could not resolve type for ${resolved}`);
+    }
+    const loader = loaderMap.get(type);
+    return {
+      url: `${pathToFileURL(resolved)}`,
+      loader,
+    };
+  }
+  throw new Error(`Cannot resolved module ${specifier} from ${referrer}`);
+}
+
+class ModuleJob {
+  constructor(url, loader) {
+    this.url = url;
+    this.modulePromise = loader(url);
+    this.module = undefined;
+
+    const dependencyJobs = [];
+    this.linked = (async () => {
+      this.module = await this.modulePromise;
+
+      const promises = this.module.link(async (specifier) => {
+        const jobPromise = ModuleJob.create(specifier, this.url);
+        dependencyJobs.push(jobPromise);
+        return (await jobPromise).modulePromise;
+      });
+
+      await Promise.all(promises);
+      return Promise.all(dependencyJobs);
+    })();
+    this.linked.catch(() => undefined);
+
+    this.instantiated = undefined;
+  }
+
+  async instantiate() {
+    if (this.instantiated === undefined) {
+      this.instantiated = this._instantiate();
+    }
+    await this.instantiated;
+  }
+
+  async _instantiate() {
+    const jobsInGraph = new Set();
+    const addJobsToDependencyGraph = async (moduleJob) => {
+      if (jobsInGraph.has(moduleJob)) {
+        return undefined;
+      }
+      jobsInGraph.add(moduleJob);
+      const dependencyJobs = await moduleJob.linked;
+      return Promise.all(dependencyJobs.map(addJobsToDependencyGraph));
+    };
+
+    await addJobsToDependencyGraph(this);
+
+    this.module.instantiate();
+
+    jobsInGraph.forEach((job) => {
+      job.instantiated = resolvedPromise;
+    });
+  }
+
+  async run() {
+    await this.instantiate();
+    const result = this.module.evaluate();
+    return { result, __proto__: null };
+  }
+
+  static async create(specifier, referrer) {
+    const { url, loader } = await resolve(specifier, referrer);
+
+    if (moduleMap.has(url)) {
+      return moduleMap.get(url);
+    }
+
+    const job = new ModuleJob(url, loader);
+    moduleMap.set(url, job);
+
+    return job;
+  }
+}
+
+const loader = {
+  async import(specifier, referrer) {
+    const job = await ModuleJob.create(specifier, referrer);
+    await job.run();
+    return job.module.getNamespace();
+  },
+};
+
+module.exports = {
+  import: loader.import,
+
+  loaderMap,
+  extensionMap,
+
+  get [Symbol.toStringTag]() {
+    return 'ESM Loader';
+  },
+};
+
+Object.defineProperty(module.exports, Symbol.toStringTag, { enumerable: false });
+Object.freeze(module.exports);
+
+const CJSLoad = CJSModule.prototype.load;
+CJSModule.prototype.load = function load(filename) {
+  Reflect.apply(CJSLoad, this, [filename]);
+
+  this.savedExports = this.exports;
+
+  const url = `${pathToFileURL(filename)}`;
+  if (!moduleMap.has(url)) {
+    const job = new ModuleJob(url, loaderMap.get('cjs'));
+    moduleMap.set(url, job);
+  }
+};
+
+Object.values(CJSModule._cache).forEach((c) => {
+  c.savedExports = c.exports;
+});
+
+setImportModuleDynamicallyCallback(
+  (specifier, referrer) => loader.import(specifier, referrer),
+);
+
+setInitializeImportMetaObjectCallback((meta, wrap) => {
+  if (importMetaCallbackMap.has(wrap)) {
+    importMetaCallbackMap.get(wrap)(meta, wrap);
+    importMetaCallbackMap.delete(wrap);
+    return;
+  }
+  meta.url = wrap.url;
+});
