@@ -77,9 +77,18 @@ const loadCJS = async (url) => {
   });
 };
 
+const loadJSON = async (url) => {
+  const pathname = fileURLToPath(url);
+  const source = await readFile(pathname);
+  return createDynamicModule(['default'], url, (reflect) => {
+    const json = JSON.parse(source);
+    reflect.exports.default.set(json);
+  });
+};
+
 const loaderMap = new Map([
   ['cjs', loadCJS],
-  ['json', loadCJS],
+  ['json', loadJSON],
   ['native', loadCJS],
   ['builtin', loadCJS],
   ['esm', loadESM],
