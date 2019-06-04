@@ -18,7 +18,7 @@ async function isAFile(pathname) {
 // https://nodejs.org/api/modules.html#modules_all_together
 
 async function LOAD_AS_FILE(X) {
-  for (const ext of ['', '.mjs', '.js', '.json', '.node']) {
+  for (const ext of ['', '.mjs', '.js', '.json', '.wasm', '.node']) {
     const resolved = `${X}${ext}`;
     if (await isAFile(resolved)) {
       return resolved;
@@ -28,7 +28,7 @@ async function LOAD_AS_FILE(X) {
 }
 
 async function LOAD_INDEX(X) {
-  for (const file of ['index.mjs', 'index.js', 'index.json', 'index.node']) {
+  for (const file of ['index.mjs', 'index.js', 'index.json', 'index.wasm', 'index.node']) {
     const resolved = path.join(X, file);
     if (await isAFile(resolved)) {
       return resolved;
@@ -149,7 +149,7 @@ async function nodeResolve(X, Y) {
   if (/^\.{0,2}\//.test(X)) {
     // a. LOAD_AS_FILE(Y + X)
     {
-      const resolved = await LOAD_AS_FILE(path.join(Y, X));
+      const resolved = await LOAD_AS_FILE(path.join(path.dirname(Y), X));
       if (resolved !== null) {
         return resolved;
       }

@@ -30,15 +30,18 @@ class ModuleMap extends Map {
 
 const moduleMap = new ModuleMap();
 
-const createDynamicModule = (exports, url, evaluate) => {
-  const names = exports.map((name) => `${name}`);
-
-  const source = `${names.map((name) =>
-    `let $${name};
-export { $${name} as ${name} };
-import.meta.exports.${name} = {
-  get: () => $${name},
-  set: (v) => $${name} = v,
+const createDynamicModule = (imports, exports, url, evaluate) => {
+  const source = `
+${imports.map((i, index) => {
+    const p = JSON.stringify(i);
+    return `import * as $import_${index} from ${p};
+import.meta.imports[${p}] = $import_${index};`;
+  }).join('\n')}
+${exports.map((e) => `let $${e};
+export { $${e} as ${e} };
+import.meta.exports.${e} = {
+  get: () => $${e},
+  set: (v) => { $${e} = v; },
 };`).join('\n')}
 import.meta.done();
 `;
@@ -49,11 +52,13 @@ import.meta.done();
 
   const reflect = {
     namespace: m.getNamespace(),
-    exports: {},
+    imports: Object.create(null),
+    exports: Object.create(null),
   };
 
   importMetaCallbackMap.set(m, (meta, wrap) => {
     meta.url = wrap.url;
+    meta.imports = reflect.imports;
     meta.exports = reflect.exports;
     meta.done = () => {
       evaluate(reflect);
@@ -70,7 +75,7 @@ const loadESM = async (url) => {
 
 const loadCJS = async (url) => {
   const pathname = url.startsWith('node:') ? url.slice(5) : fileURLToPath(url);
-  return createDynamicModule(['default'], url, (reflect) => {
+  return createDynamicModule([], ['default'], url, (reflect) => {
     const cache = CJSModule._cache[pathname];
     const exports = cache ? cache.savedExports : require(pathname);
     reflect.exports.default.set(exports);
@@ -80,9 +85,36 @@ const loadCJS = async (url) => {
 const loadJSON = async (url) => {
   const pathname = fileURLToPath(url);
   const source = await readFile(pathname);
-  return createDynamicModule(['default'], url, (reflect) => {
+  return createDynamicModule([], ['default'], url, (reflect) => {
     const json = JSON.parse(source);
     reflect.exports.default.set(json);
+  });
+};
+
+const loadWASM = async (url) => {
+  const pathname = fileURLToPath(url);
+  const buffer = await readFile(pathname);
+  let compiled;
+  try {
+    compiled = await WebAssembly.compile(buffer);
+  } catch (err) {
+    err.message = `${pathname}: ${err.message}`;
+    throw err;
+  }
+
+  const imports = WebAssembly.Module
+    .imports(compiled)
+    .map(({ module }) => module);
+
+  const exports = WebAssembly.Module
+    .exports(compiled)
+    .map(({ name }) => name);
+
+  return createDynamicModule(imports, exports, url, (reflect) => {
+    const instance = new WebAssembly.Instance(compiled, reflect.imports);
+    exports.forEach((e) => {
+      reflect.exports[e].set(instance.exports[e]);
+    });
   });
 };
 
@@ -92,6 +124,7 @@ const loaderMap = new Map([
   ['native', loadCJS],
   ['builtin', loadCJS],
   ['esm', loadESM],
+  ['wasm', loadWASM],
 ]);
 
 const extensionMap = new Map([
@@ -99,6 +132,7 @@ const extensionMap = new Map([
   ['.json', 'json'],
   ['.node', 'native'],
   ['.mjs', 'esm'],
+  ['.wasm', 'wasm'],
 ]);
 
 async function resolve(specifier, referrer) {
@@ -118,7 +152,7 @@ async function resolve(specifier, referrer) {
     }
     const loader = loaderMap.get(type);
     return {
-      url: `${pathToFileURL(resolved)}`,
+      url: type === 'builtin' ? resolved : `${pathToFileURL(resolved)}`,
       loader,
     };
   }
