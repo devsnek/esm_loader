@@ -124,7 +124,10 @@ void ModuleWrap::New(const FunctionCallbackInfo<Value>& args) {
     }
   }
 
-  if (!that->Set(context, String::NewFromUtf8(isolate, "url"), url).FromMaybe(false)) {
+  if (!that->Set(context,
+                 String::NewFromUtf8(isolate, "url", v8::NewStringType::kNormal)
+                    .ToLocalChecked(),
+                 url).FromMaybe(false)) {
     if (try_catch.HasCaught()) {
       try_catch.ReThrow();
     }
@@ -357,20 +360,31 @@ void ModuleWrap::Initialize(Local<Context> context, Local<Object> target) {
   Isolate* isolate = context->GetIsolate();
 
   Local<FunctionTemplate> tpl = FunctionTemplate::New(isolate, New);
-  tpl->SetClassName(v8::String::NewFromUtf8(isolate, "ModuleWrap"));
+  tpl->SetClassName(
+      v8::String::NewFromUtf8(isolate, "ModuleWrap", v8::NewStringType::kNormal)
+        .ToLocalChecked());
   tpl->InstanceTemplate()->SetInternalFieldCount(1);
 
 #define V(name, fn) \
-  tpl->PrototypeTemplate()->Set(String::NewFromUtf8(isolate, name), FunctionTemplate::New(isolate, fn));
+  tpl->PrototypeTemplate()->Set( \
+      String::NewFromUtf8(isolate, name, v8::NewStringType::kNormal) \
+        .ToLocalChecked(), \
+      FunctionTemplate::New(isolate, fn));
   V("link", Link);
   V("instantiate", Instantiate);
   V("evaluate", Evaluate);
   V("getNamespace", GetNamespace);
 #undef V
 
-  target->Set(String::NewFromUtf8(isolate, "ModuleWrap"), tpl->GetFunction());
+  target->Set(context,
+              String::NewFromUtf8(isolate, "ModuleWrap", v8::NewStringType::kNormal)
+                .ToLocalChecked(),
+                tpl->GetFunction(context).ToLocalChecked()).ToChecked();
 #define V(name, fn) \
-  target->Set(context, String::NewFromUtf8(isolate, name), Function::New(isolate, fn)).ToChecked();
+  target->Set(context, \
+              String::NewFromUtf8(isolate, name, v8::NewStringType::kNormal) \
+                  .ToLocalChecked(), \
+              Function::New(context, fn).ToLocalChecked()).ToChecked();
   V("setImportModuleDynamicallyCallback", ModuleWrap::SetImportModuleDynamicallyCallback);
   V("setInitializeImportMetaObjectCallback", ModuleWrap::SetInitializeImportMetaObjectCallback);
 #undef V

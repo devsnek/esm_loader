@@ -31,7 +31,8 @@
 #define CHECK_NE(a, b) CHECK((a) != (b))
 
 
-#define THROW_EXCEPTION(isolate, message) \
-  (void) isolate->ThrowException(v8::Exception::Error(v8::String::NewFromUtf8(isolate, message)))
+#define THROW_EXCEPTION(isolate, message)                                     \
+  (void) isolate->ThrowException(v8::Exception::Error(                        \
+        v8::String::NewFromUtf8(isolate, message, v8::NewStringType::kNormal).ToLocalChecked()))
 
 #endif  // SRC_ADDON_H_
