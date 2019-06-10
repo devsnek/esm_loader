@@ -1,10 +1,7 @@
 #include <algorithm>
+#include <node.h>
 #include <v8.h>
-#include "addon.h"
 #include "module_wrap.h"
-
-namespace snek {
-namespace loader {
 
 using v8::Array;
 using v8::Context;
@@ -198,13 +195,13 @@ void ModuleWrap::Instantiate(const FunctionCallbackInfo<Value>& args) {
   ASSIGN_OR_RETURN_UNWRAP(&obj, args.This());
   Local<Context> context = obj->context_.Get(isolate);
   Local<Module> module = obj->module_.Get(isolate);
+  TryCatch try_catch(isolate);
   Maybe<bool> ok = module->InstantiateModule(context, ModuleWrap::ResolveCallback);
+  if (!ok.FromMaybe(false) && try_catch.HasCaught()) {
+    try_catch.ReThrow();
+  }
 
-  // clear resolve cache on instantiate
   obj->resolve_cache_.clear();
-
-  if (!ok.FromMaybe(false))
-    return;
 }
 
 void ModuleWrap::Evaluate(const FunctionCallbackInfo<Value>& args) {
@@ -218,10 +215,11 @@ void ModuleWrap::Evaluate(const FunctionCallbackInfo<Value>& args) {
 
   MaybeLocal<Value> result = module->Evaluate(context);
 
-  if (result.IsEmpty())
+  if (result.IsEmpty()) {
     try_catch.ReThrow();
-  else
+  } else {
     args.GetReturnValue().Set(result.ToLocalChecked());
+  }
 }
 
 void ModuleWrap::GetNamespace(const FunctionCallbackInfo<Value>& args) {
@@ -232,13 +230,13 @@ void ModuleWrap::GetNamespace(const FunctionCallbackInfo<Value>& args) {
   Local<Module> module = obj->module_.Get(isolate);
 
   switch (module->GetStatus()) {
-    default:
-      return THROW_EXCEPTION(
-          isolate, "cannot get namespace, Module has not been instantiated");
     case v8::Module::Status::kInstantiated:
     case v8::Module::Status::kEvaluating:
     case v8::Module::Status::kEvaluated:
       break;
+    default:
+      return THROW_EXCEPTION(
+          isolate, "cannot get namespace, Module has not been instantiated");
   }
 
   Local<Value> result = module->GetModuleNamespace();
@@ -392,5 +390,10 @@ void ModuleWrap::Initialize(Local<Context> context, Local<Object> target) {
 
 #undef ASSIGN_OR_RETURN_UNWRAP
 
-}  // namespace loader
-}  // namespace snek
+void Initialize(v8::Local<v8::Object> exports) {
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  ModuleWrap::Initialize(context, exports);
+}
+
+NODE_MODULE(NODE_GYP_MODULE_NAME, Initialize)

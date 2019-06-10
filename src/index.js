@@ -47,11 +47,8 @@ import.meta.done();
 `;
 
   const m = new ModuleWrap(source, url);
-  m.link(() => 0);
-  m.instantiate();
 
   const reflect = {
-    namespace: m.getNamespace(),
     imports: Object.create(null),
     exports: Object.create(null),
   };
@@ -281,3 +278,19 @@ setInitializeImportMetaObjectCallback((meta, wrap) => {
   }
   meta.url = wrap.url;
 });
+
+const ModuleLoad = CJSModule._load;
+CJSModule._load = (request, parent, isMain) => {
+  if (isMain) {
+    const r = require.resolve(request);
+    if (r.endsWith('.mjs')) {
+      return module.exports
+        .import(r)
+        .catch((e) => {
+          console.error(e); // eslint-disable-line no-console
+          process.exit(1);
+        });
+    }
+  }
+  return ModuleLoad.call(CJSModule, request, parent, isMain);
+};
