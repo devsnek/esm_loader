@@ -1,5 +1,5 @@
 {
-  "name": "native_esm_module",
+  "name": "@devsnek/esm_loader",
   "version": "0.0.1",
   "description": "",
   "main": "src/index.js",
