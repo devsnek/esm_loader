@@ -9,6 +9,7 @@ const {
   setInitializeImportMetaObjectCallback,
   setImportModuleDynamicallyCallback,
 } = require('bindings')('module_wrap');
+const WASI = require('wasi');
 const nodeResolve = require('./node_resolve');
 
 const resolvedPromise = Promise.resolve();
@@ -99,19 +100,43 @@ const loadWASM = async (url) => {
     throw err;
   }
 
+  let usesWasi = false;
   const imports = WebAssembly.Module
     .imports(compiled)
-    .map(({ module }) => module);
+    .reduce((a, { module }) => {
+      if (module === 'wasi_unstable') {
+        usesWasi = true;
+      } else {
+        a.push(module);
+      }
+      return a;
+    }, []);
 
   const exports = WebAssembly.Module
     .exports(compiled)
     .map(({ name }) => name);
 
   return createDynamicModule(imports, exports, url, (reflect) => {
+    let wasi;
+    if (usesWasi) {
+      wasi = new WASI({
+        // https://github.com/WebAssembly/WASI/issues/5
+        preopenDirectories: { '.': '.' },
+        args: process.argv.slice(1),
+        env: process.env,
+      });
+      reflect.imports.wasi_unstable = wasi.exports;
+    }
+
     const instance = new WebAssembly.Instance(compiled, reflect.imports);
     exports.forEach((e) => {
       reflect.exports[e].set(instance.exports[e]);
     });
+
+    if (usesWasi) {
+      wasi.setMemory(instance.exports.memory);
+      instance.exports._start();
+    }
   });
 };
 
@@ -153,7 +178,7 @@ async function resolve(specifier, referrer) {
       loader,
     };
   }
-  throw new Error(`Cannot resolved module ${specifier} from ${referrer}`);
+  throw new Error(`Cannot resolved module "${specifier}" from "${referrer}"`);
 }
 
 class ModuleJob {
@@ -283,7 +308,7 @@ const ModuleLoad = CJSModule._load;
 CJSModule._load = (request, parent, isMain) => {
   if (isMain) {
     const r = require.resolve(request);
-    if (r.endsWith('.mjs')) {
+    if (r.endsWith('.mjs') || r.endsWith('.wasm')) {
       return module.exports
         .import(r)
         .catch((e) => {
