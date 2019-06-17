@@ -89,7 +89,7 @@ const loadJSON = async (url) => {
   });
 };
 
-const loadWASM = async (url) => {
+const loadWASM = async (url, isMain) => {
   const pathname = fileURLToPath(url);
   const buffer = await readFile(pathname);
   let compiled;
@@ -135,7 +135,11 @@ const loadWASM = async (url) => {
 
     if (usesWasi) {
       wasi.setMemory(instance.exports.memory);
-      instance.exports._start();
+      if (isMain) {
+        instance.exports._start();
+      } else {
+        instance.exports.__wasi_unstable_reactor_start();
+      }
     }
   });
 };
@@ -182,9 +186,9 @@ async function resolve(specifier, referrer) {
 }
 
 class ModuleJob {
-  constructor(url, loader) {
+  constructor(url, loader, isMain) {
     this.url = url;
-    this.modulePromise = loader(url);
+    this.modulePromise = loader(url, isMain);
     this.module = undefined;
 
     const dependencyJobs = [];
@@ -192,7 +196,7 @@ class ModuleJob {
       this.module = await this.modulePromise;
 
       const promises = this.module.link(async (specifier) => {
-        const jobPromise = ModuleJob.create(specifier, this.url);
+        const jobPromise = ModuleJob.create(specifier, this.url, false);
         dependencyJobs.push(jobPromise);
         return (await jobPromise).modulePromise;
       });
@@ -238,14 +242,14 @@ class ModuleJob {
     return { result, __proto__: null };
   }
 
-  static async create(specifier, referrer) {
+  static async create(specifier, referrer, isMain) {
     const { url, loader } = await resolve(specifier, referrer);
 
     if (moduleMap.has(url)) {
       return moduleMap.get(url);
     }
 
-    const job = new ModuleJob(url, loader);
+    const job = new ModuleJob(url, loader, isMain);
     moduleMap.set(url, job);
 
     return job;
@@ -254,7 +258,7 @@ class ModuleJob {
 
 const loader = {
   async import(specifier, referrer) {
-    const job = await ModuleJob.create(specifier, referrer);
+    const job = await ModuleJob.create(specifier, referrer, false);
     await job.run();
     return job.module.getNamespace();
   },
@@ -309,8 +313,8 @@ CJSModule._load = (request, parent, isMain) => {
   if (isMain) {
     const r = require.resolve(request);
     if (r.endsWith('.mjs') || r.endsWith('.wasm')) {
-      return module.exports
-        .import(r)
+      return ModuleJob.create(r, undefined, true)
+        .then((m) => m.run())
         .catch((e) => {
           console.error(e); // eslint-disable-line no-console
           process.exit(1);
