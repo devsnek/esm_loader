@@ -146,7 +146,7 @@ async function nodeResolve(X, Y) {
   }
 
   // 3. If X begins with './' or '/' or '../'
-  if (/^\.{0,2}\//.test(X)) {
+  if (X.startsWith('.') || X.startsWith('/')) {
     // a. LOAD_AS_FILE(Y + X)
     {
       const resolved = await LOAD_AS_FILE(path.join(path.dirname(Y), X));
@@ -157,7 +157,7 @@ async function nodeResolve(X, Y) {
 
     // b. LOAD_AS_DIRECTORY(Y + X)
     {
-      const resolved = await LOAD_AS_DIRECTORY(path.join(Y, X));
+      const resolved = await LOAD_AS_DIRECTORY(path.join(path.dirname(Y), X));
       if (resolved !== null) {
         return resolved;
       }

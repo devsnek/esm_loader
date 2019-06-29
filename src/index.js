@@ -72,10 +72,21 @@ const loadESM = async (url) => {
 };
 
 const loadCJS = async (url) => {
-  const pathname = url.startsWith('node:') ? url.slice(5) : fileURLToPath(url);
+  const pathname = fileURLToPath(url);
   return createDynamicModule([], ['default'], url, (reflect) => {
     const cache = CJSModule._cache[pathname];
     const exports = cache ? cache.savedExports : require(pathname);
+    reflect.exports.default.set(exports);
+  });
+};
+
+const loadBuiltin = async (url) => {
+  const exports = require(url);
+  const exportNames = Object.keys(exports);
+  return createDynamicModule([], ['default', ...exportNames], url, (reflect) => {
+    exportNames.forEach((name) => {
+      reflect.exports[name].set(exports[name]);
+    });
     reflect.exports.default.set(exports);
   });
 };
@@ -134,11 +145,15 @@ const loadWASM = async (url, isMain) => {
     });
 
     if (usesWasi) {
-      wasi.setMemory(instance.exports.memory);
+      if (instance.exports.memory) {
+        wasi.setMemory(instance.exports.memory);
+      }
       if (isMain) {
-        instance.exports._start();
-      } else {
-        instance.exports.__wasi_unstable_reactor_start();
+        if (instance.exports._start) {
+          instance.exports._start();
+        } else if (instance.exports.__wasi_unstable_reactor_start) {
+          instance.exports.__wasi_unstable_reactor_start();
+        }
       }
     }
   });
@@ -148,7 +163,7 @@ const loaderMap = new Map([
   ['cjs', loadCJS],
   ['json', loadJSON],
   ['native', loadCJS],
-  ['builtin', loadCJS],
+  ['builtin', loadBuiltin],
   ['esm', loadESM],
   ['wasm', loadWASM],
 ]);
@@ -178,7 +193,7 @@ async function resolve(specifier, referrer) {
     }
     const loader = loaderMap.get(type);
     return {
-      url: type === 'builtin' ? resolved : `${pathToFileURL(resolved)}`,
+      url: type === 'builtin' ? resolved.slice(5) : `${pathToFileURL(resolved)}`,
       loader,
     };
   }
@@ -295,19 +310,6 @@ Object.values(CJSModule._cache).forEach((c) => {
   c.savedExports = c.exports;
 });
 
-setImportModuleDynamicallyCallback(
-  (specifier, referrer) => loader.import(specifier, referrer),
-);
-
-setInitializeImportMetaObjectCallback((meta, wrap) => {
-  if (importMetaCallbackMap.has(wrap)) {
-    importMetaCallbackMap.get(wrap)(meta, wrap);
-    importMetaCallbackMap.delete(wrap);
-    return;
-  }
-  meta.url = wrap.url;
-});
-
 const ModuleLoad = CJSModule._load;
 CJSModule._load = (request, parent, isMain) => {
   if (isMain) {
@@ -323,3 +325,16 @@ CJSModule._load = (request, parent, isMain) => {
   }
   return ModuleLoad.call(CJSModule, request, parent, isMain);
 };
+
+setImportModuleDynamicallyCallback(
+  (specifier, referrer) => loader.import(specifier, referrer),
+);
+
+setInitializeImportMetaObjectCallback((meta, wrap) => {
+  if (importMetaCallbackMap.has(wrap)) {
+    importMetaCallbackMap.get(wrap)(meta, wrap);
+    importMetaCallbackMap.delete(wrap);
+    return;
+  }
+  meta.url = wrap.url;
+});
