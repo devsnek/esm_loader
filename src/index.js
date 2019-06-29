@@ -32,18 +32,22 @@ class ModuleMap extends Map {
 const moduleMap = new ModuleMap();
 
 const createDynamicModule = (imports, exports, url, evaluate) => {
-  const source = `
-${imports.map((i, index) => {
+  const importsSource = imports.map((i, index) => {
     const p = JSON.stringify(i);
     return `import * as $import_${index} from ${p};
 import.meta.imports[${p}] = $import_${index};`;
-  }).join('\n')}
-${exports.map((e) => `let $${e};
-export { $${e} as ${e} };
+  }).join('\n');
+
+  const exportsSource = exports.map((e) => `let $export_${e};
+export { $export_${e} as ${e} };
 import.meta.exports.${e} = {
-  get: () => $${e},
-  set: (v) => { $${e} = v; },
-};`).join('\n')}
+  get: () => $export_${e},
+  set: (v) => { $export_${e} = v; },
+};`).join('\n');
+
+  const source = `// Generated wrapper for ${url}
+${importsSource}
+${exportsSource}
 import.meta.done();
 `;
 
@@ -117,7 +121,7 @@ const loadWASM = async (url, isMain) => {
     .reduce((a, { module }) => {
       if (module === 'wasi_unstable') {
         usesWasi = true;
-      } else {
+      } else if (!a.includes(module)) {
         a.push(module);
       }
       return a;
