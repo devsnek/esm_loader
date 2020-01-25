@@ -13,7 +13,6 @@ const WASI = require('wasi');
 const WIT = require('wasm-interface-types');
 const nodeResolve = require('./node_resolve');
 
-const resolvedPromise = Promise.resolve();
 const importMetaCallbackMap = new WeakMap();
 
 class ModuleMap extends Map {
@@ -241,58 +240,30 @@ async function resolve(specifier, referrer) {
 class ModuleJob {
   constructor(url, loader, isMain) {
     this.url = url;
-    this.modulePromise = loader(url, isMain);
     this.module = undefined;
 
-    const dependencyJobs = [];
     this.linked = (async () => {
-      this.module = await this.modulePromise;
+      this.module = await loader(url, isMain);
 
       const promises = this.module.link(async (specifier) => {
-        const jobPromise = ModuleJob.create(specifier, this.url, false);
-        dependencyJobs.push(jobPromise);
-        return (await jobPromise).modulePromise;
+        const job = await ModuleJob.create(specifier, this.url, false);
+        await job.linked;
+        return job.module;
       });
 
       await Promise.all(promises);
-      return Promise.all(dependencyJobs);
     })();
     this.linked.catch(() => undefined);
-
-    this.instantiated = undefined;
   }
 
   async instantiate() {
-    if (this.instantiated === undefined) {
-      this.instantiated = this._instantiate();
-    }
-    await this.instantiated;
-  }
-
-  async _instantiate() {
-    const jobsInGraph = new Set();
-    const addJobsToDependencyGraph = async (moduleJob) => {
-      if (jobsInGraph.has(moduleJob)) {
-        return undefined;
-      }
-      jobsInGraph.add(moduleJob);
-      const dependencyJobs = await moduleJob.linked;
-      return Promise.all(dependencyJobs.map(addJobsToDependencyGraph));
-    };
-
-    await addJobsToDependencyGraph(this);
-
+    await this.linked;
     this.module.instantiate();
-
-    jobsInGraph.forEach((job) => {
-      job.instantiated = resolvedPromise;
-    });
   }
 
   async run() {
     await this.instantiate();
-    const result = this.module.evaluate();
-    return { result, __proto__: null };
+    await this.module.evaluate();
   }
 
   static async create(specifier, referrer, isMain) {
@@ -348,22 +319,6 @@ Object.values(CJSModule._cache).forEach((c) => {
   c.savedExports = c.exports;
 });
 
-const ModuleLoad = CJSModule._load;
-CJSModule._load = (request, parent, isMain) => {
-  if (isMain) {
-    const r = require.resolve(request);
-    if (r.endsWith('.mjs') || r.endsWith('.wasm')) {
-      return ModuleJob.create(r, undefined, true)
-        .then((m) => m.run())
-        .catch((e) => {
-          console.error(e); // eslint-disable-line no-console
-          process.exit(1);
-        });
-    }
-  }
-  return ModuleLoad.call(CJSModule, request, parent, isMain);
-};
-
 setImportModuleDynamicallyCallback(
   (specifier, referrer) => loader.import(specifier, referrer),
 );
@@ -376,3 +331,17 @@ setInitializeImportMetaObjectCallback((meta, wrap) => {
   }
   meta.url = wrap.url;
 });
+
+if (process.argv[1]) {
+  // trick node core into loading an empty file
+  const entry = process.argv[1];
+  process.argv[1] = require.resolve('./empty.js');
+
+  // load entry
+  ModuleJob.create(entry, path.join(process.cwd(), '[cwd]'), true)
+    .then((m) => m.run())
+    .catch((e) => {
+      console.error(e); // eslint-disable-line no-console
+      process.exit(1);
+    });
+}

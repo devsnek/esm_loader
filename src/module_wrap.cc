@@ -233,6 +233,7 @@ void ModuleWrap::GetNamespace(const FunctionCallbackInfo<Value>& args) {
     case v8::Module::Status::kInstantiated:
     case v8::Module::Status::kEvaluating:
     case v8::Module::Status::kEvaluated:
+    case v8::Module::Status::kErrored:
       break;
     default:
       return THROW_EXCEPTION(
@@ -355,6 +356,8 @@ void ModuleWrap::SetInitializeImportMetaObjectCallback(
 }
 
 void ModuleWrap::Initialize(Local<Context> context, Local<Object> target) {
+  v8::V8::SetFlagsFromString("--harmony-top-level-await");
+
   Isolate* isolate = context->GetIsolate();
 
   Local<FunctionTemplate> tpl = FunctionTemplate::New(isolate, New);
