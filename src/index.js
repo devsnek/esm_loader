@@ -240,24 +240,39 @@ async function resolve(specifier, referrer) {
 class ModuleJob {
   constructor(url, loader, isMain) {
     this.url = url;
+    this.modulePromise = loader(url, isMain);
     this.module = undefined;
 
     this.linked = (async () => {
-      this.module = await loader(url, isMain);
+      this.module = await this.modulePromise;
 
+      const jobs = [];
       const promises = this.module.link(async (specifier) => {
         const job = await ModuleJob.create(specifier, this.url, false);
-        await job.linked;
-        return job.module;
+        jobs.push(job);
+        const module = await job.modulePromise;
+        return module;
       });
 
       await Promise.all(promises);
+
+      return jobs;
     })();
+
     this.linked.catch(() => undefined);
   }
 
   async instantiate() {
-    await this.linked;
+    const visited = new Set();
+    const visit = async (job) => {
+      if (visited.has(job)) {
+        return;
+      }
+      visited.add(job);
+      const jobs = await job.linked;
+      await Promise.all(jobs.map((j) => visit(j)));
+    };
+    await visit(this);
     this.module.instantiate();
   }
 
